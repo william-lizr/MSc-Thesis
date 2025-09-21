@@ -1,0 +1,108 @@
+---
+title: "Ex 0 C Testing for covariates formally"
+output: html_document
+---
+
+
+```{r}
+library(tidyverse)
+library(conflicted)
+library(data.table)
+
+library(EnhancedVolcano)
+
+library(DESeq2)
+
+conflicts_prefer(dplyr::filter())
+conflicts_prefer(base::intersect)
+```
+
+
+Load data from file
+```{r}
+
+gene_matrix <- readRDS("../cleaned RData files/gene_matrix.RDS")
+transposon_matrix <- readRDS("../cleaned RData files/transposon_matrix.RDS")
+phenotype_data <- readRDS("../cleaned RData files/phenotype_data.RDS")
+
+```
+
+```{r}
+
+# Load your count matrix and metadata
+# counts: rows = genes, columns = samples
+# coldata: a DataFrame with sample metadata (e.g., batch, condition, etc.)
+Deseq_matrix_basic <- DESeqDataSetFromMatrix(countData=TE_df_filtered, 
+                              colData=participant_data_filtered, 
+                              design=~Status+RIN)  # Full model
+
+dds <- DESeq(Deseq_matrix_basic)
+
+res_lrt_norm <- results(dds)
+res_lrt_norm <- res_lrt_norm[order(res_lrt_norm$pvalue), ]  # Optional: sort by p-value
+summary(res_lrt_norm)
+sum(res_lrt_norm$padj < 0.05, na.rm = TRUE)
+
+# ==============
+
+dds_reduced <- DESeq(dds, test = "LRT", reduced = ~ Status)
+
+res_reduced <- results(dds_reduced)
+res_lrt <- res_reduced[order(res_reduced$pvalue), ]  # Optional: sort by p-value
+summary(res_reduced)
+sum(res_reduced$padj < 0.05, na.rm = TRUE)
+
+### RIN does not have a significant effect
+
+```
+
+
+# Run some comparisons
+```{r}
+source("Model comparison functions.R")
+library(DESeq2)
+library(tidyverse)
+library(EnhancedVolcano)
+
+covars <- c('RIN', 'PMD', 'Age', 'Sex')
+
+formulas <- get_formula_combinations('Status', covars)
+
+evaluate_models <- evaluate_deseq_models(TE_df_filtered, participant_data_filtered, formulas)
+
+sig_gene_df <- tibble(
+  model = names(evaluate_models),
+  sig_genes = sapply(evaluate_models, function(x) x$significant_gene_count)
+)
+
+sig_gene_df <- sig_gene_df %>%
+  mutate(model_clean = gsub("model_\\d+_", "", model)) %>%
+  filter(sig_genes>100) %>%
+  arrange(desc(sig_genes))
+
+ggplot(sig_gene_df, aes(x = reorder(model_clean, sig_genes), y = sig_genes)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Number of Significant Genes per Model",
+       x = "Model (covariates)",
+       y = "Significant genes (padj < 0.05)") +
+  theme_minimal()
+
+
+top_model <- evaluate_models$model_2__Status___RIN$results
+
+
+top_model %>% EnhancedVolcano(.,
+                lab = '',
+                x = 'log2FoldChange',
+                y = 'padj',
+                pCutoff = 0.05,
+                FCcutoff = 0.6,
+                pointSize = 0.5,
+                title = 'Differential Expression of TEs in ALS',
+                subtitle = 'DESeq2 results',
+                caption = 'TEs colored by log2FC and padj',
+                legendPosition = 'right')
+  
+```
+

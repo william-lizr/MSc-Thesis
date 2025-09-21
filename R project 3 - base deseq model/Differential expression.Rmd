@@ -1,0 +1,1045 @@
+---
+title: "DGE Pipeline v1"
+output: html_document
+---
+
+```{r}
+
+# DESEQ2 pipeline
+
+# https://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html
+
+
+# EnhancedVolcano:
+
+# https://bioconductor.org/packages/devel/bioc/vignettes/EnhancedVolcano/inst/doc/EnhancedVolcano.html#adjust-colour-and-alpha-for-point-shading
+
+```
+
+#### Gene databases
+Kegg - https://www.genome.jp/kegg/genes.html
+GENCODE - https://www.gencodegenes.org/human/
+
+
+
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install(version='3.20', update = FALSE, ask = FALSE)
+
+BiocManager::install("DESeq2", update = FALSE, ask = FALSE)
+
+BiocManager::install('EnhancedVolcano', update = TRUE, ask = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+library(conflicted)
+library(data.table)
+
+library(EnhancedVolcano)
+
+library(DESeq2)
+
+conflicts_prefer(dplyr::filter())
+conflicts_prefer(base::intersect)
+```
+
+Load data from file
+```{r}
+
+gene_matrix <- readRDS("../cleaned RData files/gene_matrix.RDS")
+transposon_matrix <- readRDS("../cleaned RData files/transposon_matrix.RDS")
+phenotype_data <- readRDS("../cleaned RData files/phenotype_data.RDS")
+
+```
+
+Load additional data to cover phenotypes
+```{r}
+# # Load in additional data to cover missing participant info
+# phenotype_added <- read.csv('esteban TE data/phenoinfo_omicsBB (1) 1.csv')
+# 
+# rownames(phenotype_added) <- phenotype_added$Sample_Name
+# 
+# all_participants_ids <- c(rownames(participant_data), rownames(phenotype_added))
+# 
+# length(all_participants_ids) #330
+# unique(all_participants_ids) %>% length() #175
+# # original number of observations: 176
+# 
+# intersect(all_participants_ids, colnames(TE_df_columns_shortened)) %>% length()
+
+
+```
+
+Make deseq matrix
+```{r}
+
+Deseq_matrix <- DESeqDataSetFromMatrix(countData=transposon_matrix, 
+                              colData=phenotype_data, 
+                              design=~Status+RIN)
+```
+
+Run deseq, save results
+```{r}
+
+# Displaying some results
+
+dds <- DESeq(Deseq_matrix)
+
+resultsNames(dds)
+
+# filtering for anything above 0.58 effect size (while significant)
+# Test if LFC is greater than 0.58 in absolute value
+res <- results(dds, alpha = 0.05)
+nrow(res)
+view(res)
+
+
+df_res_anylogfold <- res %>% as.data.frame() %>% filter(abs(log2FoldChange) >= 0.1)
+nrow(df_res_anylogfold)
+
+sig <- res
+
+
+```
+
+
+# Splice out gene annotation into more columns
+```{r}
+
+# load in the helper function
+source("../R project 1 - data preparation and cleaning/splice_columns.R")
+
+res <- parse_splice_annotations(res)
+df_res_anylogfold <- parse_splice_annotations(df_res_anylogfold)
+
+# view(res)
+# view(df_res_anylogfold)
+
+```
+
+# Summary of results:
+```{r}
+summary(res)
+
+summary(df_res_anylogfold)
+```
+
+# Save results object to RData folder
+```{r}
+
+saveRDS(file = "../cleaned RData files/deseq results.RDS", object = res)
+
+```
+
+
+Plot of significant genes
+```{r}
+DESeq2::plotMA(res, ylim=c(-5,5))
+
+EnhancedVolcano(res,
+                lab = '',
+                x = 'log2FoldChange',
+                y = 'padj',
+                pCutoff = 0.05,
+                FCcutoff = 0.1,
+                title = 'Differential Expression of TEs in ALS',
+                subtitle = 'DESeq2 results',
+                caption = 'TEs colored by log2FC and padj',
+                legendPosition = 'right')
+
+```
+
+```{r}
+mean_norm_vals <- DESeq2::plotMA(sig, ylim=c(-2,2), xlab = "Mean of normalised count values")
+
+main_volcano <- EnhancedVolcano(sig,
+                lab = '',
+                x = 'log2FoldChange',
+                y = 'padj',
+                pCutoff = 0.05,
+                FCcutoff = 0.1,
+                pointSize = 1.5,
+                title = '',
+                subtitle = 'Differential expression of TEs in ALS',
+                caption = 'TEs colored by log2FC and padj',
+                legendPosition = 'right',
+                xlim = c(-1,1),
+                ylim = c(0, 8))
+
+summary_counts <- res %>%
+  as.data.frame() %>%
+  mutate(Direction = ifelse(log2FoldChange >= 0, "Upregulated", "Downregulated")) %>%
+  group_by(Direction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(Direction = factor(Direction, levels = c("Downregulated", "Upregulated")))
+
+# Add a single x for a stacked bar
+summary_counts$x <- "all"
+
+# Calculate percentages for 100% bar
+summary_counts <- summary_counts %>%
+  mutate(pct = count / sum(count) * 100)
+
+# Create pie chart
+p <- ggplot(summary_counts, aes(x = "", y = count, fill = Direction)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +  # Convert to pie chart
+  scale_fill_manual(values = c("Downregulated" = "violetred2", "Upregulated" = "royalblue1"),
+                    name = "Direction:") +
+  labs(
+    title = "Proportion of upregulated and downregulated genes",
+    subtitle = paste0("Total significant genes (FDR corrected p < 0.05): ", sum(summary_counts$count)),
+    x = NULL,
+    y = NULL
+  ) +
+  theme_void() +  # Clean theme for pie charts
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    legend.position = "bottom"
+  ) +
+  # Add count and percentage labels
+  geom_text(aes(label = paste0(count, "\n(", round(pct, 1), "%)")), 
+            position = position_stack(vjust = 0.5),
+            color = "white", 
+            fontface = "bold",
+            size = 4)
+
+summary_counts_sig <- sig %>%
+  as.data.frame() %>%
+  mutate(Direction = ifelse(log2FoldChange >= 0, "Upregulated", "Downregulated")) %>%
+  group_by(Direction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(Direction = factor(Direction, levels = c("Downregulated", "Upregulated")))
+
+summary_counts_sig <- summary_counts_sig %>%
+  mutate(pct = count / sum(count) * 100)
+
+p_sig <- ggplot(summary_counts_sig, aes(x = "", y = count, fill = Direction)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +  # Convert to pie chart
+  scale_fill_manual(values = c("Downregulated" = "violetred2", "Upregulated" = "royalblue1"),
+                    name = "Direction:") +
+  labs(
+    title = "Proportion of upregulated and downregulated genes",
+    subtitle = paste0("Total significant genes (FDR corrected p < 0.05) with log2fold change > 0.58: ", sum(summary_counts$count)),
+    x = NULL,
+    y = NULL
+  ) +
+  theme_void() +  # Clean theme for pie charts
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    legend.position = "bottom"
+  ) +
+  # Add count and percentage labels
+  geom_text(aes(label = paste0(count, "\n(", round(pct, 1), "%)")), 
+            position = position_stack(vjust = 0.5),
+            color = "white", 
+            fontface = "bold",
+            size = 4)
+
+
+print(mean_norm_vals)
+print(main_volcano)
+p
+p_sig
+
+
+```
+```{r}
+
+# 1. Save the plotMA plot (base plot)
+png(filename = "../plots/1 Differential Expression/mean_norm_vals.png", width = 1200, height = 800, res = 150)
+DESeq2::plotMA(res, ylim=c(-2,2), xlab = "Mean of normalised count values")
+dev.off()
+
+# 2. Save the EnhancedVolcano plot
+png(filename = "../plots/1 Differential Expression/main_volcano.png", width = 3500, height = 2000, res = 150)
+special_df <- res %>% as.data.frame() %>% mutate(TE_class_special = ifelse(log2FoldChange > 0, paste0(TE_class, ': ', TE_name), ''))
+
+  keyvals <- ifelse(
+    res$log2FoldChange < -0.1 & res$padj < 0.05, 'violetred2',
+      ifelse(res$log2FoldChange > 0.1 & res$padj < 0.05, 'royalblue1',
+        'black'))
+  keyvals[is.na(keyvals)] <- 'black'
+  names(keyvals)[keyvals == 'violetred2'] <- 'Downregulated'
+  names(keyvals)[keyvals == 'black'] <- 'Not significantly altered'
+  names(keyvals)[keyvals == 'royalblue1'] <- 'Upregulated'
+
+alpha <- ifelse(
+    res$log2FoldChange < -0.1, 0.8,
+      ifelse(res$log2FoldChange > 0.1, 0.8,
+        'black'))
+  keyvals[is.na(keyvals)] <- 0.4
+
+
+main_volcano <- EnhancedVolcano(special_df,
+                lab = '',
+                x = 'log2FoldChange',
+                y = 'padj',
+                pCutoff = 0.05,
+                FCcutoff = 0.1,
+                pointSize = 4,
+                colCustom = keyvals,
+                colAlpha = 0.8,
+                title = '',
+                subtitle = 'Differential expression of TEs in ALS',
+                caption = 'TEs colored by log2FC and padj',
+                legendPosition = 'right',
+                xlim = c(-1,1))
+
+print(main_volcano)
+dev.off()
+
+# 
+# ggsave("../plots/1 Differential Expression/piechart_p.png", plot = p, width = 8, height = 4, dpi = 150)
+# 
+# ggsave("../plots/1 Differential Expression/piechart_p_logfold.png", plot = p_sig, width = 8, height = 4, dpi = 150)
+```
+```{r}
+splice_list <- rownames(res) %>% strsplit(., "\\|")
+# splice_list %>% head(2)
+
+res$chromosome <- sapply(splice_list, `[`, 1)
+res$start_chord <- sapply(splice_list, `[`, 2)
+res$end_chord <- sapply(splice_list, `[`, 3)
+
+res$TE_annotation <- sapply(splice_list, `[`, 4)
+
+te_anno_list <- strsplit(res$TE_annotation, ":")
+
+res$TE_name   <- sapply(te_anno_list, `[`, 1)
+res$TE_family <- sapply(te_anno_list, `[`, 2)
+res$TE_class  <- sapply(te_anno_list, `[`, 3)
+
+
+res$te_length <- sapply(splice_list, `[`, 5)
+res$strand_orientation <- sapply(splice_list, `[`, 6)
+```
+
+
+
+```{r}
+
+res_df <- res %>% as.data.frame()
+
+upreg <- res_df %>% filter(log2FoldChange > 0.1 & padj < 0.05)
+
+
+downreg <- res_df %>% filter(log2FoldChange < -0.1 & padj < 0.05)
+
+upreg
+
+downreg
+
+print(paste('# of upregulated: ', nrow(upreg)))
+print(paste('# of downregulated: ', nrow(downreg)))
+
+
+```
+
+# BOXPLOTS by:
+
+```{r}
+
+sig <- upreg
+
+colnames(sig)
+
+get_cols <- c("TE_annotation", "TE_class", "TE_family", "TE_name", "log2FoldChange", "pvalue", "padj", "start_chord", "end_chord", "chromosome")
+
+sig_reduced_cols <- sig[get_cols] %>% as.data.frame()
+
+rownames(sig_reduced_cols) <- seq(1, nrow(sig_reduced_cols))
+
+colnames(sig_reduced_cols) <- c(
+  "Transposable Element Annotation",
+  "Transposable Element Class",
+  "Transposable Element Family",
+  "Transposable Element Name",
+  "Log2 Fold Change (Treatment vs Control)",
+  "P-value",
+  "Adjusted P-value (FDR)",
+  "Start coordinate",
+  "End coordinate",
+  "Chromosome"
+)
+
+
+options(scipen = 999)  # turns off scientific notation globally
+sig_reduced_cols$`P-value` <- round(sig_reduced_cols$`P-value`, 6)
+sig_reduced_cols$`Adjusted P-value` <- round(sig_reduced_cols$`Adjusted P-value`, 6)
+
+sig_reduced_cols <- sig_reduced_cols %>%
+  mutate("Significance (FDR corrected)" = case_when(
+    `Adjusted P-value` < 0.001 ~ "***",  # highly significant
+    `Adjusted P-value` < 0.01  ~ "**",   # moderately significant
+    `Adjusted P-value` < 0.05  ~ "*",    # significant
+    TRUE                       ~ ""      # not significant
+  ))
+
+
+colnames(sig_reduced_cols)
+
+conflicts_prefer(dplyr::select)
+
+sig_reduced_cols <- sig_reduced_cols %>%
+  select(
+    `Transposable Element Class`,
+    `Transposable Element Family`,
+    `Transposable Element Name`,
+    `Log2 Fold Change (Treatment vs Control)`,
+    `P-value`,
+    `Adjusted P-value`,
+    `Significance (FDR corrected)`,
+    `Start coordinate`,
+    `End coordinate`,
+    `Chromosome`
+  )
+
+sig_reduced_cols
+
+writexl::write_xlsx(sig_reduced_cols, path = '../tables/upreg TEs.xlsx')
+
+```
+
+
+```{r}
+
+sig <- downreg
+
+
+colnames(sig)
+
+get_cols <- c("TE_annotation", "TE_class", "TE_family", "TE_name", "log2FoldChange", "pvalue", "padj", "start_chord", "end_chord", "chromosome")
+
+sig_reduced_cols <- sig[get_cols] %>% as.data.frame()
+
+rownames(sig_reduced_cols) <- seq(1, nrow(sig_reduced_cols))
+
+colnames(sig_reduced_cols) <- c(
+  "Transposable Element Annotation",
+  "Transposable Element Class",
+  "Transposable Element Family",
+  "Transposable Element Name",
+  "Log2 Fold Change (Treatment vs Control)",
+  "P-value",
+  "Adjusted P-value (FDR)",
+  "Start coordinate",
+  "End coordinate",
+  "Chromosome"
+)
+
+
+options(scipen = 999)  # turns off scientific notation globally
+sig_reduced_cols$`P-value` <- round(sig_reduced_cols$`P-value`, 6)
+sig_reduced_cols$`Adjusted P-value` <- round(sig_reduced_cols$`Adjusted P-value`, 6)
+
+sig_reduced_cols <- sig_reduced_cols %>%
+  mutate("Significance (FDR corrected)" = case_when(
+    `Adjusted P-value` < 0.001 ~ "***",  # highly significant
+    `Adjusted P-value` < 0.01  ~ "**",   # moderately significant
+    `Adjusted P-value` < 0.05  ~ "*",    # significant
+    TRUE                       ~ ""      # not significant
+  ))
+
+
+colnames(sig_reduced_cols)
+
+sig_reduced_cols <- sig_reduced_cols %>%
+  select(
+    `Transposable Element Class`,
+    `Transposable Element Family`,
+    `Transposable Element Name`,
+    `Log2 Fold Change (Treatment vs Control)`,
+    `P-value`,
+    `Adjusted P-value`,
+    `Significance (FDR corrected)`,
+    `Start coordinate`,
+    `End coordinate`,
+    `Chromosome`
+  )
+
+
+writexl::write_xlsx(sig_reduced_cols, path = '../tables/downreg TEs.xlsx')
+
+```
+
+```{r}
+# Add direction column (up/downregulated)
+sig_counts <- as.data.frame(sig) %>%
+  mutate(direction = ifelse(log2FoldChange > 0, "Upregulated", "Downregulated"))  %>% as.data.frame()
+
+unique(sig_counts$TE_class) %>% length()
+unique(sig_counts$TE_family)  %>% length()
+unique(sig_counts$TE_name)  %>% length()
+
+TE_class_arranged <- sig_counts %>% group_by(TE_class) %>% summarise(count = n()) %>% arrange(desc(count))
+TE_class_and_family_arranged <- sig_counts %>% group_by(TE_class, TE_family) %>% summarise(count = n()) %>% arrange(desc(count))
+
+print(TE_class_arranged)
+print(TE_class_and_family_arranged)
+
+
+png(filename = "../plots/1 Differential Expression/TE_family_boxplots.png", width = 1500, height = 1000, res = 400)
+
+# Filter for the TE families of interest
+te_subset <- sig_counts %>%
+  filter(TE_family %in% c("L2", "L1", "MIR", "CR1", "Alu", "ERVL-MaLR")) %>%
+  mutate(special = ifelse(log2FoldChange>0.58 & padj < 0.05, 'Positive upregualted', ''))
+
+# Summarize means and sds of log2FoldChange by family
+summary_by_family <- te_subset %>%
+  group_by(TE_family) %>%
+  summarise(
+    mean_log2fc = mean(log2FoldChange, na.rm = TRUE),
+    sd_log2fc = sd(log2FoldChange, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+png(filename = "../plots/1 Differential Expression/TE_family_boxplots_by_direction.png", width = 1500, height = 1000, res = 400)
+
+# Filter for the TE families of interest
+te_subset <- sig_counts %>%
+  filter(TE_family %in% c("L2", "L1", "MIR", "CR1", "Gypsy", "Alu", "ERVL-MaLR")) %>% 
+  mutate(log2FoldChange = abs(log2FoldChange)) %>% 
+  complete(TE_family, direction) 
+
+# Plot boxplots of log2FoldChange by TE_family and direction
+ggplot(te_subset, aes(x = factor(TE_family, 
+                                 levels = c("L1", "L2", "MIR", "CR1", "Gypsy", "Alu", "ERVL-MaLR")), 
+                      y = log2FoldChange, fill = direction)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7, position = position_dodge(width = 0.8)) +
+  scale_fill_manual(
+    values = c("Upregulated" = "royalblue1", 
+               "Downregulated" = "violetred2", 
+               "Not significantly altered" = "black")
+  ) +
+  xlab("TE family") +
+  ylab("log2(Fold Change)") +
+  theme_minimal(base_size = 12)
+
+dev.off()
+# =====================================
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# Define TE families and directions
+TE_families <- c("L2", "L1", "MIR", "CR1", "Gypsy", "Alu", "ERVL-MaLR")
+directions <- c("Upregulated", "Downregulated", "Not significantly altered")
+
+# Filter and add dummy rows if combinations are missing
+plot_data <- sig_counts %>%
+  filter(TE_family %in% TE_families) %>%
+  complete(
+    TE_family = TE_families,
+    direction = directions,
+    fill = list(log2FoldChange = NA)
+  )
+
+# Plot boxplots with absolute values
+ggplot(plot_data, aes(x = TE_family, y = abs(log2FoldChange), fill = direction)) +
+  geom_boxplot(position = position_dodge(width = 0.8), outlier.shape = NA, na.rm = TRUE) +
+  scale_fill_manual(
+    values = c(
+      "Upregulated" = "royalblue1",
+      "Downregulated" = "violetred2",
+      "Not significantly altered" = "black"
+    )
+  ) +
+  xlab("TE Family") +
+  ylab("Absolute log2 Fold Change") +
+  theme_minimal()
+
+```
+---
+title: "TE Differential Expression Analysis - Comprehensive Visualizations"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 12, fig.height = 8)
+```
+
+# Load Libraries and Data
+
+```{r libraries}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(writexl)
+library(gridExtra)
+library(knitr)
+library(DT)
+
+# Set theme for all plots
+theme_set(theme_minimal(base_size = 12))
+
+# Define consistent colors
+colors <- list(
+  upregulated = "royalblue1",
+  downregulated = "violetred2",
+  neutral = "grey60"
+)
+```
+
+```{r load-data}
+# Assuming your 'res' object is already loaded from your pipeline
+# If not, uncomment the line below:
+# res <- readRDS("../cleaned RData files/deseq results.RDS")
+
+# Convert results to dataframe for easier manipulation
+res_df <- res %>% as.data.frame()
+
+# Filter for significant results
+sig_results <- res_df %>% 
+  filter(padj < 0.05 & abs(log2FoldChange) > 0.1) %>%
+  mutate(
+    direction = ifelse(log2FoldChange > 0, "Upregulated", "Downregulated"),
+    TE_subfamily = TE_name,  # Assuming TE_name represents subfamily
+    abs_log2fc = abs(log2FoldChange),
+    significance = case_when(
+      padj < 0.001 ~ "***",
+      padj < 0.01 ~ "**",
+      padj < 0.05 ~ "*",
+      TRUE ~ ""
+    )
+  )
+
+cat("Total significant TEs:", nrow(sig_results), "\n")
+cat("Upregulated:", sum(sig_results$direction == "Upregulated"), "\n")
+cat("Downregulated:", sum(sig_results$direction == "Downregulated"), "\n")
+```
+
+# Bar Charts
+
+## TE Family Distribution
+
+```{r barchart-family, fig.width=12, fig.height=8}
+# Prepare data for TE family barchart
+te_family_counts <- sig_results %>%
+  group_by(TE_family, direction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(desc(count)) %>% 
+  head(20) %>% 
+  tidyr::complete(
+    TE_family, 
+    direction = c("Upregulated", "Downregulated"), 
+    fill = list(count = 0)
+  )
+
+# Create TE family barchart
+plot_te_family <- ggplot(te_family_counts, 
+                        aes(x = reorder(TE_family, count), y = count, fill = direction)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  scale_fill_manual(values = c("Upregulated" = colors$upregulated, 
+                              "Downregulated" = colors$downregulated)) +
+  coord_flip() +
+  labs(
+    title = "Significantly Altered TEs by Family",
+    subtitle = paste("Total significant TEs:", nrow(sig_results)),
+    x = "TE Family",
+    y = "Count of Significant TEs",
+    fill = "Direction"
+  ) +
+  theme(legend.position = "bottom")
+
+print(plot_te_family)
+
+# Save plot
+ggsave("../plots/1 Differential Expression/barchart_te_family.png", 
+       plot_te_family, width = 12, height = 8, dpi = 100)
+```
+
+### Summary Table: TE Family Counts
+```{r family-table}
+te_family_summary <- te_family_counts %>%
+  pivot_wider(names_from = direction, values_from = count, values_fill = 0) %>%
+  mutate(Total = Upregulated + Downregulated) %>%
+  arrange(desc(Total))
+
+kable(te_family_summary, caption = "Count of Significantly Altered TEs by Family")
+```
+
+## TE Subfamily Distribution (Top 20)
+
+```{r barchart-subfamily, fig.width=14, fig.height=10}
+# Prepare data for TE subfamily barchart (top 20)
+te_subfamily_counts <- sig_results %>%
+  group_by(TE_name, direction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(desc(count)) %>%
+  tidyr::complete(
+    TE_name, 
+    direction = c("Upregulated", "Downregulated"), 
+    fill = list(count = 0)
+  ) %>% 
+  slice_head(n = 40)
+
+plot_te_subfamily <- ggplot(te_subfamily_counts, 
+                           aes(x = reorder(TE_name, count), y = count, fill = direction)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  scale_fill_manual(values = c("Upregulated" = colors$upregulated, 
+                              "Downregulated" = colors$downregulated)) +
+  coord_flip() +
+  labs(
+    title = "Most Frequently Altered TEs by Subfamily/Name",
+    subtitle = "Top represented TE subfamilies",
+    x = "TE Name/Subfamily",
+    y = "Count of Significant TEs",
+    fill = "Direction"
+  ) +
+  theme(axis.text.y = element_text(size = 9),
+        legend.position = "bottom")
+
+print(plot_te_subfamily)
+
+# Save plot
+ggsave("../plots/1 Differential Expression/barchart_te_subfamily.png", 
+       plot_te_subfamily, width = 14, height = 10, dpi = 300)
+```
+
+## Chromosome Distribution
+
+```{r barchart-chromosome, fig.width=12, fig.height=8}
+# Prepare data for chromosome barchart
+chromosome_levels <- c(paste0("Chr. ", 1:22), "Chr. X")
+
+chromosome_counts <- sig_results %>%
+  # Rename chromosomes
+  mutate(chromosome = str_replace(chromosome, "^chr", "Chr. ")) %>%
+  # Factorize in desired order
+  mutate(chromosome = factor(chromosome, levels = chromosome_levels)) %>%
+  group_by(chromosome, direction) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(chromosome)
+
+plot_chromosome <- ggplot(chromosome_counts, 
+                         aes(x = chromosome, y = count, fill = direction)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  scale_fill_manual(values = c("Upregulated" = colors$upregulated, 
+                              "Downregulated" = colors$downregulated)) +
+  coord_flip() +
+  labs(
+    title = "Significantly Altered TEs by Chromosome",
+    subtitle = "Distribution across chromosomes",
+    x = "Chromosome",
+    y = "Count of Significant TEs",
+    fill = "Direction"
+  ) +
+  theme(legend.position = "bottom")
+
+print(plot_chromosome)
+
+# Save plot
+ggsave("../plots/1 Differential Expression/barchart_chromosome.png", 
+       plot_chromosome, width = 12, height = 8, dpi = 300)
+```
+
+### Summary Table: Chromosome Distribution
+```{r chromosome-table}
+chromosome_summary <- chromosome_counts %>%
+  pivot_wider(names_from = direction, values_from = count, values_fill = 0) %>%
+  mutate(Total = Upregulated + Downregulated) %>%
+  arrange(desc(Total))
+
+kable(chromosome_summary, caption = "Count of Significantly Altered TEs by Chromosome")
+```
+
+# Boxplots
+
+## Distribution by TE Family
+
+```{r boxplot-family, fig.width=12, fig.height=8}
+# Filter for families with sufficient representation
+family_counts <- table(sig_results$TE_family)
+families_to_plot <- names(family_counts[family_counts >= 3])  # At least 3 instances
+
+boxplot_te_family <- sig_results %>%
+  filter(TE_family %in% families_to_plot) %>%
+  ggplot(aes(x = reorder(TE_family, abs_log2fc, median), 
+             y = log2FoldChange, 
+             fill = direction)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7, position = position_dodge(width = 0.8)) +
+  geom_jitter(position = position_jitterdodge(dodge.width = 0.8), 
+              alpha = 0.1, size = 0.2) +
+  scale_fill_manual(values = c("Upregulated" = colors$upregulated, 
+                              "Downregulated" = colors$downregulated)) +
+  coord_flip() +
+  labs(
+    title = "Distribution of log2 Fold Change by TE Family",
+    subtitle = "Families with ≥3 significantly altered TEs",
+    x = "TE Family",
+    y = "log2 Fold Change",
+    fill = "Direction"
+  ) +
+  theme(legend.position = "bottom")
+
+print(boxplot_te_family)
+
+# Save plot
+ggsave("../plots/1 Differential Expression/boxplot_te_family.png", 
+       boxplot_te_family, width = 12, height = 8, dpi = 300)
+```
+
+## Distribution by TE Subfamily (Top 15)
+
+```{r boxplot-subfamily, fig.width=14, fig.height=10}
+# Filter for top represented subfamilies
+subfamily_counts <- table(sig_results$TE_name)
+subfamilies_to_plot <- names(sort(subfamily_counts, decreasing = TRUE)[1:15])
+
+boxplot_te_subfamily <- sig_results %>%
+  filter(TE_name %in% subfamilies_to_plot) %>%
+  ggplot(aes(x = reorder(TE_name, abs_log2fc, median), 
+             y = log2FoldChange, 
+             fill = direction)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7, position = position_dodge(width = 0.8)) +
+  geom_jitter(position = position_jitterdodge(dodge.width = 0.8), 
+              alpha = 0.6, size = 1) +
+  scale_fill_manual(values = c("Upregulated" = colors$upregulated, 
+                              "Downregulated" = colors$downregulated)) +
+  coord_flip() +
+  labs(
+    title = "Distribution of log2 Fold Change by TE Subfamily/Name",
+    subtitle = "Top 15 most frequently altered subfamilies",
+    x = "TE Name/Subfamily",
+    y = "log2 Fold Change",
+    fill = "Direction"
+  ) +
+  theme(axis.text.y = element_text(size = 10),
+        legend.position = "bottom")
+
+print(boxplot_te_subfamily)
+
+# Save plot
+ggsave("../plots/1 Differential Expression/boxplot_te_subfamily.png", 
+       boxplot_te_subfamily, width = 14, height = 10, dpi = 300)
+```
+
+# Top Altered TEs Overview
+
+## Top 10 Upregulated TEs
+
+```{r top-upregulated}
+top_upregulated <- sig_results %>%
+  filter(direction == "Upregulated") %>%
+  arrange(desc(log2FoldChange)) %>%
+  slice_head(n = 10) %>%
+  select(TE_name, TE_family, TE_class, chromosome, log2FoldChange, padj, significance) %>%
+  mutate(
+    rank = 1:10,
+    log2FoldChange = round(log2FoldChange, 3),
+    padj = format(padj, scientific = TRUE, digits = 3)
+  )
+
+# Display as interactive table
+datatable(top_upregulated, 
+          caption = "Top 10 Most Upregulated TEs",
+          options = list(pageLength = 10, scrollX = TRUE))
+
+# Save to Excel
+write_xlsx(top_upregulated, "../tables/top_10_upregulated_TEs.xlsx")
+```
+
+## Top 10 Downregulated TEs
+
+```{r top-downregulated}
+top_downregulated <- sig_results %>%
+  filter(direction == "Downregulated") %>%
+  arrange(log2FoldChange) %>%
+  slice_head(n = 10) %>%
+  select(TE_name, TE_family, TE_class, chromosome, log2FoldChange, padj, significance) %>%
+  mutate(
+    rank = 1:10,
+    log2FoldChange = round(log2FoldChange, 3),
+    padj = format(padj, scientific = TRUE, digits = 3)
+  )
+
+# Display as interactive table
+datatable(top_downregulated, 
+          caption = "Top 10 Most Downregulated TEs",
+          options = list(pageLength = 10, scrollX = TRUE))
+
+# Save to Excel
+write_xlsx(top_downregulated, "../tables/top_10_downregulated_TEs.xlsx")
+```
+
+## Combined Overview Plot
+
+```{r top-genes-plot, fig.width=14, fig.height=10}
+# Create combined plot for top genes
+top_genes_combined <- bind_rows(
+  top_upregulated %>% mutate(direction_detailed = "Top 10 Upregulated"),
+  top_downregulated %>% mutate(direction_detailed = "Top 10 Downregulated")
+) %>%
+  mutate(
+    gene_label = paste0(TE_name, " (", TE_family, ")"),
+    log2FoldChange = as.numeric(log2FoldChange)
+  )
+
+plot_top_genes <- ggplot(top_genes_combined, 
+                        aes(x = reorder(gene_label, abs(log2FoldChange)), 
+                            y = log2FoldChange, 
+                            fill = direction_detailed)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  scale_fill_manual(values = c("Top 10 Upregulated" = colors$upregulated, 
+                              "Top 10 Downregulated" = colors$downregulated)) +
+  coord_flip() +
+  labs(
+    title = "Top 10 Most Significantly Altered TEs",
+    subtitle = "Highest absolute fold changes in each direction",
+    x = "TE Name (Family)",
+    y = "log2 Fold Change",
+    fill = "Category"
+  ) +
+  theme(axis.text.y = element_text(size = 9),
+        legend.position = "bottom")
+
+print(plot_top_genes)
+
+# Save plot
+ggsave("../plots/1 Differential Expression/top_genes_overview.png", 
+       plot_top_genes, width = 14, height = 10, dpi = 300)
+```
+
+# Summary Statistics
+
+```{r summary-stats}
+# Create comprehensive summary statistics
+summary_stats <- sig_results %>%
+  group_by(TE_family, direction) %>%
+  summarise(
+    count = n(),
+    mean_log2fc = round(mean(log2FoldChange), 3),
+    median_log2fc = round(median(log2FoldChange), 3),
+    sd_log2fc = round(sd(log2FoldChange), 3),
+    min_padj = format(min(padj), scientific = TRUE, digits = 3),
+    max_log2fc = round(max(abs(log2FoldChange)), 3),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(count))
+
+# Display as interactive table
+datatable(summary_stats, 
+          caption = "Summary Statistics by TE Family and Direction",
+          options = list(pageLength = 15, scrollX = TRUE))
+
+# Save to Excel
+write_xlsx(summary_stats, "../tables/TE_family_summary_stats.xlsx")
+```
+
+## Overall Summary
+
+```{r overall-summary}
+# Create overall summary
+overall_summary <- sig_results %>%
+  summarise(
+    total_significant = n(),
+    upregulated_count = sum(direction == "Upregulated"),
+    downregulated_count = sum(direction == "Downregulated"),
+    unique_families = n_distinct(TE_family),
+    unique_subfamilies = n_distinct(TE_name),
+    chromosomes_affected = n_distinct(chromosome),
+    mean_abs_log2fc = round(mean(abs_log2fc), 3),
+    median_abs_log2fc = round(median(abs_log2fc), 3)
+  ) %>%
+  pivot_longer(everything(), names_to = "Metric", values_to = "Value")
+
+kable(overall_summary, 
+      caption = "Overall Summary of Significant TE Alterations",
+      col.names = c("Metric", "Value"))
+```
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
+```{r}
+# ===============================================
+# Summary table with unthresholded & thresholded counts
+# ===============================================
+
+library(tidyverse)
+library(writexl)
+
+# Convert to dataframe
+res_df <- as.data.frame(res)
+
+# Define thresholds
+padj_cutoff <- 0.05
+lfc_cutoff  <- 0.1
+
+# --- Significant genes (padj only)
+sig_results <- res_df %>%
+  filter(!is.na(padj) & padj < padj_cutoff) %>%
+  mutate(Direction = ifelse(log2FoldChange > 0, "Upregulated", "Downregulated"))
+
+# --- Significant + LFC threshold
+sig_lfc_results <- sig_results %>%
+  filter(abs(log2FoldChange) > lfc_cutoff)
+
+# --- Function to tally counts and percentages
+make_summary <- function(df, total) {
+  df %>%
+    group_by(Direction) %>%
+    summarise(Count = n(), .groups = "drop") %>%
+    mutate(Percent = round(100 * Count / total, 1),
+           Summary = paste0(Count, " (", Percent, "%)"))
+}
+
+# --- Tables
+total_sig <- nrow(sig_results)
+total_sig_lfc <- nrow(sig_lfc_results)
+
+summary_sig <- make_summary(sig_results, total_sig)
+summary_lfc <- make_summary(sig_lfc_results, total_sig_lfc)
+
+# --- Merge into one table
+final_summary <- full_join(summary_sig %>% select(Direction, Summary),
+                           summary_lfc %>% select(Direction, Summary),
+                           by = "Direction",
+                           suffix = c(" (Significant)", " (Significant + |log2FC| > 0.1)"))
+
+# Add totals
+final_summary <- bind_rows(
+  final_summary,
+  tibble(Direction = "Total",
+         `Summary (Significant)` = as.character(total_sig),
+         `Summary (Significant + |log2FC| > 0.1)` = as.character(total_sig_lfc))
+)
+
+# Reorder
+final_summary <- final_summary %>%
+  select(Direction,
+         `Summary (Significant)`,
+         `Summary (Significant + |log2FC| > 0.1)`)
+
+print(final_summary)
+
+# --- Save as Excel
+write_xlsx(final_summary, path = "../tables/overall_summary_counts.xlsx")
+
+```
+
+---
+
+**Analysis completed:** `r Sys.time()`
+
+**Files saved:**
+- All plots saved to: `../plots/1 Differential Expression/`
+- All tables saved to: `../tables/`

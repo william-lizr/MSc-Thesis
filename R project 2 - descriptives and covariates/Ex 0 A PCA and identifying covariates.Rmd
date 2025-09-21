@@ -1,0 +1,242 @@
+---
+title: "Ex 0 PCA and identifying covariates"
+output: html_document
+---
+
+
+Do PCA on phenotype data to see if any variable is a cofound
+
+If yes, add it to the model as a covariate
+
+PCA:
+```{r}
+library(DESeq2)
+
+# Load ggplot2
+library(ggplot2)
+
+library(gridExtra)
+```
+
+# Color brewer resources:
+https://bids.github.io/colormap/
+https://colorbrewer2.org/#type=sequential&scheme=OrRd&n=3
+
+# Accessible color picker:
+https://venngage.com/tools/accessible-color-palette-generator
+
+## APA guidance on accessible color:
+https://apastyle.apa.org/style-grammar-guidelines/tables-figures/colors
+
+
+Load data from file
+```{r}
+
+gene_matrix <- readRDS("../cleaned RData files/gene_matrix.RDS")
+transposon_matrix <- readRDS("../cleaned RData files/transposon_matrix.RDS")
+phenotype_data <- readRDS("../cleaned RData files/phenotype_data.RDS")
+
+```
+
+```{r}
+
+# Load your count matrix and metadata
+# counts: rows = genes, columns = samples
+# coldata: a DataFrame with sample metadata (e.g., batch, condition, etc.)
+dds <- DESeqDataSetFromMatrix(countData=transposon_matrix, 
+                              colData=phenotype_data, 
+                              design=~Status+RIN)  # Full model
+
+```
+
+
+```{r}
+# Load your count matrix and metadata
+# counts: rows = genes, columns = samples
+# coldata: a DataFrame with sample metadata (e.g., batch, condition, etc.)
+dds <- DESeqDataSetFromMatrix(countData=transposon_matrix, 
+                              colData=phenotype_data, 
+                              design=~Status+RIN)  # Full model
+
+
+vsd <- vst(dds, blind = TRUE)
+expr_matrix <- assay(vsd)  # rows: genes, columns: samples
+
+pca <- prcomp(t(expr_matrix), scale. = TRUE)
+
+# Extract sample metadata
+metadata <- as.data.frame(colData(dds))
+
+# Combine PCA results with metadata
+pca_df <- as.data.frame(pca$x)
+pca_df <- cbind(pca_df, metadata)
+
+```
+
+
+```{r}
+# Factorize variables:
+
+pca_df$PMDCat   <- factor(pca_df$PMDCat)
+pca_df$Sex      <- factor(x = pca_df$Sex, levels = c(1, 2), labels = c('male', 'female') )
+pca_df$AgeCat   <- factor(pca_df$AgeCat)
+pca_df$RINCat   <- factor(pca_df$RINCat)
+pca_df$C9Orf72  <- factor(pca_df$C9Orf72, levels = c(0, 1), labels = c('present', 'absent'))
+
+```
+
+# Make a single plot with all of the 6 possible covariates:
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+# Continuous color palette (gradient from light to #e6308a)
+continuous_palette <- scale_color_gradient(low = "yellow", high = "#b51963")
+
+# Categorical color palette (manual)
+categorical_palette <- scale_color_manual(values = c("#b51963", "#042f8a"))
+
+size_var <- 2
+
+
+p_age <- ggplot(pca_df, aes(PC1, PC2, color = Age)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  continuous_palette +
+  labs(title = "PCA: Age Continuous")+
+  guides(color = guide_legend(title = NULL))
+
+p_pmd <- ggplot(pca_df, aes(PC1, PC2, color = PMD)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  continuous_palette +
+  labs(title = "PCA: PMD Continuous")+
+  guides(color = guide_legend(title = NULL))
+
+p_rin <- ggplot(pca_df, aes(PC1, PC2, color = RIN)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  continuous_palette +
+  labs(title = "PCA: RIN Continuous")+
+  guides(color = guide_legend(title = NULL))
+
+p_c9 <- ggplot(pca_df, aes(PC1, PC2, color = C9Orf72, shape = C9Orf72)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  categorical_palette +
+  labs(title = "PCA: C9Orf72")
+
+p_sex <- ggplot(pca_df, aes(PC1, PC2, color = Sex, shape = Sex)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  categorical_palette +
+  labs(title = "PCA: Sex")
+
+grid.arrange(
+  p_age, p_rin,
+  p_pmd, p_sex, p_c9,
+  ncol = 3
+)
+
+```
+```{r}
+
+library(ggplot2)
+library(gridExtra)
+
+# Open PNG device with desired resolution and size
+png("../plots/0 Descriptives/pca_participant_characteristics.png", width = 3000, height = 2000, res = 300)  # width adjusted for 5 plots in one row
+
+# Arrange all plots in a single row
+grid.arrange(
+  p_age, p_rin, p_pmd, p_c9, p_sex,
+  ncol = 3
+)
+
+# Close the graphics device
+dev.off()
+
+```
+
+
+
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+
+# Continuous color palette (gradient from yellow to #b51963)
+continuous_palette <- scale_color_gradient(low = "yellow", high = "#b51963")
+
+size_var <- 2
+
+p_astro <- ggplot(pca_df, aes(PC1, PC2, color = astrocytes)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  continuous_palette +
+  labs(title = "PCA: Astrocytes")+
+  guides(color = guide_legend(title = NULL))
+
+p_neuron <- ggplot(pca_df, aes(PC1, PC2, color = neurons)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  continuous_palette +
+  labs(title = "PCA: Neurons")+
+  guides(color = guide_legend(title = NULL))
+
+p_micro <- ggplot(pca_df, aes(PC1, PC2, color = microglia)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  continuous_palette +
+  labs(title = "PCA: Microglia")+
+  guides(color = guide_legend(title = NULL))
+
+p_endo <- ggplot(pca_df, aes(PC1, PC2, color = endothelial)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  continuous_palette +
+  labs(title = "PCA: Endothelial")+
+  guides(color = guide_legend(title = NULL))
+
+p_oligo <- ggplot(pca_df, aes(PC1, PC2, color = oligodendrocytes)) +
+  geom_point(size = size_var) +
+  theme_minimal() +
+  continuous_palette +
+  labs(title = "PCA: Oligodendrocytes")+
+  guides(color = guide_legend(title = NULL))
+
+# Combine plots into one grid
+grid.arrange(
+  p_astro, p_neuron, p_micro,
+  p_endo, p_oligo,
+  ncol = 3
+)
+
+```
+
+```{r}
+
+library(ggplot2)
+library(gridExtra)
+
+# Open a PNG device with specific resolution
+png("../plots/0 Descriptives/pca_celltypes.png", width = 3000, height = 2000, res = 300)  # adjust width for 5 plots in one line
+
+# Plot all in a single row
+grid.arrange(
+  p_astro, p_neuron, p_micro, p_endo, p_oligo,
+  ncol = 3
+)
+
+# Close the device
+dev.off()
+
+
+```
+
+
+```{r}
+
+```
+
+

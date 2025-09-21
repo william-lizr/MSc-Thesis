@@ -1,0 +1,368 @@
+---
+title: "Descriptive stats dataset"
+output: html_document
+---
+
+```{r}
+library(DESeq2)
+library(tidyverse)
+```
+
+
+Load data from file
+```{r}
+
+gene_matrix <- readRDS("../cleaned RData files/gene_matrix.RDS")
+transposon_matrix <- readRDS("../cleaned RData files/transposon_matrix.RDS")
+phenotype_data <- readRDS("../cleaned RData files/phenotype_data.RDS")
+  
+colnames(phenotype_data)
+  
+# Loop through each column of phenotype_data and display unique values
+
+# for (col in colnames(phenotype_data)) {
+#   cat("\nColumn:", col, "\n")
+#   print(unique(phenotype_data[[col]]))
+# }
+
+```
+
+
+Descriptives:
+```{r}
+library(tidyverse)
+
+participant_data_filtered <- phenotype_data
+
+# Status (case-control)
+participant_data_filtered$Status <- factor(participant_data_filtered$Status, levels = c(1, 2), labels = c('Control', 'ALS'))
+participant_data_filtered %>% group_by(Status) %>% summarize(count = n())
+
+# Sex
+participant_data_filtered$Sex <- factor(participant_data_filtered$Sex, levels = c(1, 2), labels = c('Male', 'Female'))
+participant_data_filtered %>% group_by(Sex) %>% summarize(count = n())
+
+# Count by sex
+sex_counts <- participant_data_filtered %>%
+  group_by(Sex) %>%
+  summarise(count = n()) %>%
+  mutate(
+    prop = count / sum(count),
+    label = paste0(Sex, "\n", count, " (", round(prop * 100, 1), "%)")
+  )
+
+# Pie chart
+print(ggplot(sex_counts, aes(x = "", y = count, fill = Sex)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = label), position = position_stack(vjust = 0.5)) +
+  theme_void() +
+  labs(title = "Distribution of Sex") +
+  scale_fill_brewer(palette = "Pastel1"))
+
+# Age
+participant_data_filtered %>% group_by(AgeCat) %>% summarize(count = n())
+
+
+# Age distribution
+## AgeCat
+participant_data_filtered %>% group_by(AgeCat) %>% summarize(count = n()) %>% ggplot(aes(x = AgeCat, y = count)) + geom_col()
+
+## Age
+participant_data_filtered %>% group_by(Age) %>% ggplot(aes(x = Age)) + geom_density(fill = 'lightblue') + geom_smooth(stat = "density", method = "loess", se = TRUE, color = "black")
+
+# 
+# # RIN 
+# ## Mean and SD
+# rin_mean_value <- mean(participant_data_filtered$RIN, na.rm = TRUE)
+# rin_sd_value   <- sd(participant_data_filtered$RIN, na.rm = TRUE)
+# 
+# print(rin_mean_value)
+# print(rin_sd_value)
+# 
+# 
+# # Age
+# ## Mean and SD
+# age_mean_value <- mean(participant_data_filtered$Age, na.rm = TRUE) %>% 
+# age_sd_value   <- sd(participant_data_filtered$Age, na.rm = TRUE)
+# 
+# print(age_mean_value)
+# print(age_sd_value)
+# 
+# # PMD
+# ### Mean and SD
+# pmd_mean_value <- round(mean(participant_data_filtered$PMD, na.rm = TRUE), 2)
+# pmd_sd_value   <- round(sd(participant_data_filtered$PMD, na.rm = TRUE), 2)
+# 
+# print(pmd_mean_value)
+# print(pmd_sd_value)
+
+
+# One table for: Age, RIN, PMD
+participant_data_filtered %>%
+  summarise(
+    mean_Age = round(mean(Age, na.rm = TRUE), 2),
+    sd_Age   = round(sd(Age, na.rm = TRUE), 2),
+    mean_RIN = round(mean(RIN, na.rm = TRUE), 2),
+    sd_RIN   = round(sd(RIN, na.rm = TRUE), 2),
+    mean_PMD = round(mean(PMD, na.rm = TRUE), 2),
+    sd_PMD   = round(sd(PMD, na.rm = TRUE), 2)
+  )
+
+library(patchwork)
+
+# RIN boxplot
+plot_rin <- ggplot(participant_data_filtered, aes(x = Status, y = RIN)) +
+  geom_boxplot(fill = "lightblue") +
+  theme_minimal() +
+  labs(title = "RIN", x = "", y = "RIN")
+
+# PMD boxplot
+plot_pmd <- ggplot(participant_data_filtered, aes(x = Status, y = PMD)) +
+  geom_boxplot(fill = "lightgreen") +
+  theme_minimal() +
+  labs(title = "Postmortem Delay (PMD)", x = "", y = "PMD (hours)")
+
+plot_age <- ggplot(participant_data_filtered, aes(x = Status, y = Age)) +
+  geom_violin(fill = "lightblue", color = "black", trim = FALSE) +
+  theme_minimal() +
+  labs(title = "Violin Plot of Age", x = "", y = "Age")
+
+# Combine side by side
+plot_rin + plot_pmd + plot_age
+
+
+
+```
+
+```{r}
+library(tidyverse)
+library(knitr)
+library(broom)
+```
+
+
+
+```{r}
+participant_data_filtered <- participant_data[rownames(participant_data) %in% common_samples, ]
+
+# Make sure Status and Sex are labeled
+participant_data_filtered$Status <- factor(participant_data_filtered$Status, levels = c(1, 2), labels = c("Control", "ALS"))
+participant_data_filtered$Sex    <- factor(participant_data_filtered$Sex, levels = c(1, 2), labels = c("Male", "Female"))
+
+# Summary table
+summary_table <- participant_data_filtered %>%
+  group_by(Status) %>%
+  summarise(
+    Total = n(),
+    Age_mean = round(mean(Age, na.rm = TRUE), 2),
+    Age_sd = round(sd(Age, na.rm = TRUE), 2),
+    Female_n = sum(Sex == "Female", na.rm = TRUE),
+    Female_pct = round(100 * mean(Sex == "Female", na.rm = TRUE), 2),
+    Male_n = sum(Sex == "Male", na.rm = TRUE),
+    Male_pct = round(100 * mean(Sex == "Male", na.rm = TRUE), 2),
+    RIN_mean = round(mean(RIN, na.rm = TRUE), 2),
+    RIN_sd = round(sd(RIN, na.rm = TRUE), 2),
+    PMD_mean = round(mean(PMD, na.rm = TRUE), 2),
+    PMD_sd = round(sd(PMD, na.rm = TRUE), 2)
+  )
+
+# t-tests for Age, RIN, PMD
+age_pval <- t.test(Age ~ Status, data = participant_data_filtered)$p.value
+rin_pval <- t.test(RIN ~ Status, data = participant_data_filtered)$p.value
+pmd_pval <- t.test(PMD ~ Status, data = participant_data_filtered)$p.value
+
+# Chi-squared test for Sex
+sex_table <- table(participant_data_filtered$Status, participant_data_filtered$Sex)
+sex_pval <- chisq.test(sex_table)$p.value
+
+# Format final table
+final_table <- tibble(
+  Variable = c("Total", 
+               "Age (mean ± SD)", 
+               "Female (%)", 
+               "Male (%)", 
+               "RIN (mean ± SD)", 
+               "PMD (mean ± SD)"),
+  `ALS Cases` = c(
+    summary_table$Total[summary_table$Status == "ALS"],
+    paste0(summary_table$Age_mean[2], " ± ", summary_table$Age_sd[2]),
+    paste0(summary_table$Female_n[2], " (", summary_table$Female_pct[2], "%)"),
+    paste0(summary_table$Male_n[2], " (", summary_table$Male_pct[2], "%)"),
+    paste0(summary_table$RIN_mean[2], " ± ", summary_table$RIN_sd[2]),
+    paste0(summary_table$PMD_mean[2], " ± ", summary_table$PMD_sd[2])
+  ),
+  Controls = c(
+    summary_table$Total[summary_table$Status == "Control"],
+    paste0(summary_table$Age_mean[1], " ± ", summary_table$Age_sd[1]),
+    paste0(summary_table$Female_n[1], " (", summary_table$Female_pct[1], "%)"),
+    paste0(summary_table$Male_n[1], " (", summary_table$Male_pct[1], "%)"),
+    paste0(summary_table$RIN_mean[1], " ± ", summary_table$RIN_sd[1]),
+    paste0(summary_table$PMD_mean[1], " ± ", summary_table$PMD_sd[1])
+  ),
+  `p-value` = c(
+    "", 
+    signif(age_pval, 3),
+    signif(sex_pval, 3),
+    signif(sex_pval, 3),
+    signif(rin_pval, 3),
+    signif(pmd_pval, 3)
+  )
+)
+
+# Add significance stars
+final_table <- final_table %>%
+  mutate(`Significance` = case_when(
+    `p-value` == "" ~ "",
+    as.numeric(`p-value`) < 0.001 ~ "***",
+    as.numeric(`p-value`) < 0.01  ~ "**",
+    as.numeric(`p-value`) < 0.05  ~ "*",
+    TRUE ~ ""
+  ))
+
+
+# Print final table
+kable(final_table, caption = "Descriptive Statistics by Group (ALS vs Control)", align = "lccc")
+
+
+```
+
+```{r}
+# List of cell type columns
+cell_types <- c("microglia", "neurons", "astrocytes", "endothelial", "oligodendrocytes")
+
+# Summarize cell type proportions by Status
+celltype_summary <- participant_data_filtered %>%
+  group_by(Status) %>%
+  summarise(across(all_of(cell_types),
+                   list(mean = ~ round(mean(.x, na.rm = TRUE), 3),
+                        sd = ~ round(sd(.x, na.rm = TRUE), 3)),
+                   .names = "{.col}_{.fn}"))
+
+# Compute p-values for each cell type
+celltype_pvals <- sapply(cell_types, function(cell) {
+  t.test(participant_data_filtered[[cell]] ~ participant_data_filtered$Status)$p.value
+})
+
+# Build final cell type table
+celltype_table <- tibble(
+  Cell_Type = cell_types,
+  `ALS Cases` = paste0(
+    celltype_summary[2, paste0(cell_types, "_mean")], " ± ",
+    celltype_summary[2, paste0(cell_types, "_sd")]
+  ),
+  Controls = paste0(
+    celltype_summary[1, paste0(cell_types, "_mean")], " ± ",
+    celltype_summary[1, paste0(cell_types, "_sd")]
+  ),
+  `p-value` = signif(celltype_pvals, 3)
+) %>%
+  mutate(Significance = case_when(
+    as.numeric(`p-value`) < 0.001 ~ "***",
+    as.numeric(`p-value`) < 0.01  ~ "**",
+    as.numeric(`p-value`) < 0.05  ~ "*",
+    TRUE ~ ""
+  ))
+
+# Display the second table
+kable(celltype_table, caption = "Estimated Cell Type Proportions by Group (ALS vs Control)", align = "lccc")
+
+library(knitr)
+library(kableExtra)
+
+# Format the table in APA style for Word
+kable(celltype_table, format = "pandoc", align = "lccc",
+      caption = "Table X\n\nEstimated Cell Type Proportions by Group (ALS vs. Control). Means and standard deviations are reported. Asterisks denote statistical significance: * p < .05, ** p < .01, *** p < .001.") %>%
+  kable_styling(latex_options = c("striped"), full_width = F)
+
+
+```
+
+# Boxplots of the amount of Cell types by case control status:
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(stringr)  # for str_to_title
+
+pca_df$Status <- factor(pca_df$Status, levels = c("1", "2"), labels=c("Control", "ALS"))
+
+
+# List of cell types
+cell_types <- c("astrocytes", "neurons", "microglia", "endothelial", "oligodendrocytes")
+
+# Create a list to hold plots
+plots <- list()
+
+# Loop over each cell type and create a boxplot with capitalized titles
+for (cell in cell_types) {
+  title_text <- paste(cell)
+  title_text <- stringr::str_to_title(title_text)  # capitalize each word
+  
+  p <- ggplot(pca_df, aes_string(x = "Status", y = cell)) +
+    geom_boxplot(outlier.shape = NA) +   # no outliers as dots
+    geom_jitter(width = 0.2, alpha = 0.5, color = "#b51963") +  # add points jittered
+    theme_minimal() +
+    labs(title = title_text,
+         x = "Status",
+         y = paste("Propotion of ", cell))
+  
+  plots[[cell]] <- p
+}
+
+# Arrange plots in grid (2 rows x 3 cols)
+grid.arrange(grobs = plots, ncol = 3)
+
+```
+```{r}
+# Open a PNG device (high resolution, 300 DPI, for publication)
+png("celltype_boxplots_by_status.png", width = 3000, height = 2000, res = 300)
+
+# Arrange and print all plots in a 2-row, 3-column layout
+grid.arrange(grobs = plots, ncol = 3)
+
+# Close the PNG device
+dev.off()
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Cell types to include
+cell_types <- c("astrocytes", "neurons", "microglia", "endothelial", "oligodendrocytes")
+
+# Step 1: Normalize each sample's cell type values to proportions
+pca_df_prop <- pca_df %>%
+  mutate(total = rowSums(select(., all_of(cell_types)))) %>%
+  mutate(across(all_of(cell_types), ~ .x / total)) %>%
+  select(-total)
+
+# Step 2: Reshape to long format
+df_long <- pca_df_prop %>%
+  select(Status, all_of(cell_types)) %>%
+  pivot_longer(cols = all_of(cell_types), names_to = "CellType", values_to = "Proportion")
+
+# Step 3: Summarize mean proportion by Status and CellType
+df_summary <- df_long %>%
+  group_by(Status, CellType) %>%
+  summarise(MeanProportion = mean(Proportion), .groups = "drop")
+
+# Step 4: Plot stacked bar chart
+ggplot(df_summary, aes(x = Status, y = MeanProportion, fill = CellType)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Proportion of Cell Types by Status",
+       x = "Status",
+       y = "Mean Cell Type Proportion") +
+  scale_fill_brewer(palette = "Set2")  # Or use your own palette
+
+```
+
+```{r}
+
+
+
+```
+
+

@@ -1,0 +1,137 @@
+---
+title: "Ex 0 C Testing for covariates formally"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(conflicted)
+library(data.table)
+library(DESeq2)
+library(EnhancedVolcano)
+
+conflicts_prefer(dplyr::filter())
+conflicts_prefer(base::intersect)
+```
+
+
+```{r}
+gene_matrix <- readRDS("../cleaned RData files/gene_matrix.RDS")
+transposon_matrix <- readRDS("../cleaned RData files/transposon_matrix.RDS")
+phenotype_data <- readRDS("../cleaned RData files/phenotype_data.RDS")
+
+# For this analysis, we'll focus on the transposon matrix
+TE_df_filtered <- transposon_matrix
+participant_data_filtered <- phenotype_data
+
+# Ensure row names match between count data and phenotype data
+participant_data_filtered <- participant_data_filtered[colnames(TE_df_filtered), ]
+```
+
+```{r}
+# Define formulas for testing covariate effects
+model_formulas <- list(
+  model1 = list(full = ~ Status, reduced = ~ 1, name = "Status vs Intercept"),
+  model2 = list(full = ~ Status + RIN, reduced = ~ Status, name = "Status+RIN vs Status"),
+  model3 = list(full = ~ Status + Age, reduced = ~ Status, name = "Status+Age vs Status"),
+  model4 = list(full = ~ Status + RIN + Age, reduced = ~ Status, name = "Status+RIN+Age vs Status"),
+  model5 = list(full = ~ Status + RIN + Age, reduced = ~ Status+RIN, name = "Status+RIN+Age vs Status")
+)
+
+# Function to run DESeq2 LRT
+run_lrt <- function(count_data, col_data, full_formula, reduced_formula) {
+  # Filter out genes with zero counts across all samples
+  keep <- rowSums(count_data) > 0
+  count_data_filtered <- count_data[keep, ]
+  
+  dds <- DESeqDataSetFromMatrix(countData = count_data_filtered,
+                                colData = col_data,
+                                design = full_formula)
+  
+  # Filter out genes with very low counts
+  keep <- rowSums(counts(dds)) >= 10
+  dds <- dds[keep, ]
+  
+  dds <- DESeq(dds, test = "LRT", reduced = reduced_formula)
+  res <- results(dds)
+  res <- res[order(res$pvalue), ]
+  
+  list(dds = dds, 
+       results = res,
+       significant_gene_count = sum(res$padj < 0.05, na.rm = TRUE))
+}
+```
+
+```{r}
+# Test each model comparison
+model_results <- list()
+
+for(i in 1:length(model_formulas)) {
+  model_name <- names(model_formulas)[i]
+  full_model <- model_formulas[[i]]$full
+  reduced_model <- model_formulas[[i]]$reduced
+  
+  cat("Running", model_formulas[[i]]$name, "\n")
+  
+  tryCatch({
+    model_results[[model_name]] <- run_lrt(
+      count_data = TE_df_filtered,
+      col_data = participant_data_filtered,
+      full_formula = full_model,
+      reduced_formula = reduced_model
+    )
+    model_results[[model_name]]$comparison <- model_formulas[[i]]$name
+  }, error = function(e) {
+    cat("Error in", model_name, ":", e$message, "\n")
+    model_results[[model_name]] <- list(
+      significant_gene_count = NA,
+      comparison = model_formulas[[i]]$name,
+      error = e$message
+    )
+  })
+}
+
+# Summarize significant genes
+sig_gene_df <- tibble(
+  model = names(model_results),
+  comparison = sapply(model_results, function(x) x$comparison),
+  sig_genes = sapply(model_results, function(x) x$significant_gene_count)
+) %>%
+  filter(!is.na(sig_genes)) %>%
+  arrange(desc(sig_genes))
+
+print(sig_gene_df)
+```
+
+```{r}
+# Only plot if we have valid results
+if(nrow(sig_gene_df) > 0) {
+  ggplot(sig_gene_df, aes(x = reorder(model, sig_genes), y = sig_genes)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    coord_flip() +
+    labs(title = "Number of Significant Genes per Model Comparison",
+         subtitle = "LRT tests for covariate effects",
+         x = "Model Comparison",
+         y = "Significant genes (padj < 0.05)") +
+    theme_minimal() +
+    geom_text(aes(label = sig_genes), hjust = -0.1)
+} else {
+  cat("No valid results to plot\n")
+}
+```
+
+```{r}
+# Optional: Show top significant genes from each comparison
+for(model_name in names(model_results)) {
+  if(!is.null(model_results[[model_name]]$results) && !is.na(model_results[[model_name]]$significant_gene_count)) {
+    cat("\n", model_results[[model_name]]$comparison, "\n")
+    cat("Significant genes:", model_results[[model_name]]$significant_gene_count, "\n")
+    
+    if(model_results[[model_name]]$significant_gene_count > 0) {
+      res <- model_results[[model_name]]$results
+      top_genes <- head(res[res$padj < 0.05 & !is.na(res$padj), ], 5)
+      print(top_genes[, c("log2FoldChange", "pvalue", "padj")])
+    }
+  }
+}
+```
