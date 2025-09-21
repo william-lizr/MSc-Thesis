@@ -1,0 +1,467 @@
+---
+title: "gene enrichment script"
+output: html_document
+---
+
+# loading libraries
+```{r}
+library(GenomicRanges)
+
+library(biomaRt)
+
+library(devtools)
+devtools::install_github("karakulahg/TEffectR")
+
+library(TEffectR)
+
+library(dplyr)
+library(tidyr)
+
+library(DESeq2)
+```
+
+```{r}
+
+# load results
+deseq_results <- readRDS(file = "../cleaned RData files/deseq results.RDS")
+
+deseq_TE_results <- deseq_results %>% as.data.frame() %>% filter(abs(log2FoldChange) > 0.1 & padj < 0.05)
+
+print(paste("Found:", nrow(deseq_TE_results), "significant differentially expressed Transposable elements"))
+
+
+```
+
+```{r}
+source("../R project 1 - data preparation and cleaning/splice_columns.R")
+
+deseq_TE_results <- parse_splice_annotations(deseq_TE_results)
+colnames(deseq_TE_results)
+
+# subset to only certain columns
+columns_to_subset <- c("chromosome", "start_chord", "end_chord", "TE_annotation","TE_family", "TE_class")
+
+te_annot <- deseq_TE_results[,columns_to_subset]
+
+```
+
+
+# Identify nearest genes to each TE (+- 5000 bp)  
+
+## Creating reference genome object
+```{r}
+# Connect to Ensembl BioMart (use Ensembl Genes)
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")  # human genes
+# for mouse use: dataset = "mmusculus_gene_ensembl"
+
+# Get gene coordinates
+genes <- getBM(
+  attributes = c("chromosome_name", "start_position", "end_position", 
+                 "strand", "ensembl_gene_id", "external_gene_name"),
+  mart = ensembl
+)
+
+# Tidy up columns to match your expected structure
+genes$strand <- ifelse(genes$strand == 1, "+", "-")  # convert strand encoding
+colnames(genes) <- c("chr", "start", "end", "strand", "gene_id", "gene_name")
+
+# fix chromosome names:
+
+# Add "chr" prefix to BioMart gene coords if not already present
+genes$chr <- ifelse(grepl("^chr", genes$chr), genes$chr, paste0("chr", genes$chr))
+
+# For TE annotations, make sure they don’t have extra "chr" if you prefer plain numbers
+# te_annot$chr <- gsub("^chr", "", te_annot$chr)
+
+bfr_restrict <- nrow(genes)
+
+# Optionally remove non-standard chromosomes from genes (like MT, patches, etc.)
+genes <- genes[genes$chr %in% unique(te_annot$chr), ]
+
+print(paste(bfr_restrict-nrow(genes), " out of ", bfr_restrict, "(", round(((1 - (nrow(genes)/bfr_restrict))*100), 2),"%)", "lines with strange chromosomes removed (because not present in TE count matrix)"))
+
+```
+
+
+```{r}
+# Build GRanges object
+gene_gr <- GRanges(
+  seqnames = genes$chr,
+  ranges   = IRanges(start = genes$start, end = genes$end),
+  strand   = genes$strand,
+  gene_id  = genes$gene_id,
+  gene_name = genes$gene_name
+)
+
+```
+
+## Creating TE object
+```{r}
+
+colnames(te_annot)
+colnames(te_annot) <- c("chr", "start", "end", "repeat_name", "repeat_family", "repeat_type")
+colnames(te_annot)
+
+te_annot$start <- te_annot$start %>% as.numeric()
+te_annot$end <- te_annot$end %>% as.numeric()
+
+
+te_gr <- GRanges(seqnames=te_annot$chr,
+                 ranges=IRanges(start=te_annot$start, end=te_annot$end),
+                 strand=te_annot$strand,
+                 repeat_name=rownames(te_annot),
+                 repeat_family=te_annot$repeat_family,
+                 repeat_type=te_annot$repeat_type)
+```
+
+### Check chromosome naming
+```{r}
+te_annot$chr[1:10]
+
+genes$chr[1:10]
+
+
+# genes %>% view()
+# te_annot %>% view()
+
+
+```
+
+
+## Intersecting reference genome object and TE object
+```{r}
+
+# Find nearest gene within 5000 bp
+hits <- distanceToNearest(te_gr, gene_gr, ignore.strand = TRUE)
+within5kb <- hits[mcols(hits)$distance <= 5000]
+
+# Build TE–gene pairs with coordinates
+pairs <- data.frame(
+  TE_name       = mcols(te_gr[queryHits(within5kb)])$repeat_name,
+  TE_chr        = seqnames(te_gr[queryHits(within5kb)]),
+  TE_start      = start(te_gr[queryHits(within5kb)]),
+  TE_end        = end(te_gr[queryHits(within5kb)]),
+  Gene_id       = mcols(gene_gr[subjectHits(within5kb)])$gene_id,
+  Gene_chr      = seqnames(gene_gr[subjectHits(within5kb)]),
+  Gene_start    = start(gene_gr[subjectHits(within5kb)]),
+  Gene_end      = end(gene_gr[subjectHits(within5kb)]),
+  Distance      = mcols(within5kb)$distance
+)
+
+# View the table in RStudio viewer
+# pairs %>% View()
+
+```
+
+# Import and subset expression matrices:
+```{r}
+
+gene_counts <- readRDS("../cleaned RData files/gene_matrix.RDS")
+te_counts <- readRDS("../cleaned RData files/transposon_matrix.RDS")
+participant_metadata <- readRDS("../cleaned RData files/phenotype_data.RDS")
+
+# keep only paired genes and TEs
+gene_counts_sub <- gene_counts[rownames(gene_counts) %in% pairs$Gene_id, ]
+te_counts_sub   <- te_counts[rownames(te_counts) %in% pairs$TE_name, ]
+
+nrow(gene_counts_sub)
+nrow(te_counts_sub)
+
+```
+
+```{r}
+
+participant_metadata$Status <- factor(participant_metadata$Status, levels = c(1,2), labels = c('control', 'ALS'))
+participant_metadata$C9Orf72 <- factor(participant_metadata$C9Orf72, levels = c(0,1), labels = c('C9orf72 norm', 'C9orf72 mutated'))
+participant_metadata %>% group_by(Status, C9Orf72) %>% summarise(count_n = n())
+
+
+```
+# Formatting condition for Apply LM
+```{r}
+# 1. TE matrix
+# 3 annotation columns:
+#  geneName
+#  repeatClass
+#  repeatName
+#  remaining columns: in the same order as in gene matrix
+
+colnames_TE <- colnames(te_counts_sub)
+colnames_gene <- colnames(gene_counts_sub)
+
+participant_only_colnames <- intersect(colnames_TE, colnames_gene)
+length(participant_only_colnames)
+
+# Get the rownames
+rn <- rownames(te_counts_sub)
+
+# Extract the "repeat annotation" field (between the 3rd and 5th "|")
+repeat_anno <- sapply(strsplit(rn, "\\|"), function(x) x[4])
+
+# Split that field by ":"
+repeat_split <- do.call(rbind, strsplit(repeat_anno, ":", fixed = TRUE))
+
+# Assign new columns
+te_counts_sub$geneName   <- repeat_split[, 1]
+te_counts_sub$repeatClass <- repeat_split[, 2]
+te_counts_sub$repeatName   <- repeat_split[, 3]
+
+# colnames(te_counts_sub)
+
+reorder_columns <- c(c("geneName", "repeatClass", "repeatName"), participant_only_colnames)
+
+
+te_counts_sub <- te_counts_sub[reorder_columns]
+# colnames(te_counts_sub)
+
+#=================================================
+
+
+# 2. Gene matrix
+# rownames: ensembl  IDs
+# remaining columns: columns in same order as in TE matrix
+
+gene_counts_sub <- gene_counts_sub[participant_only_colnames]
+
+```
+
+# Get gene metadata
+```{r}
+
+ensembl <- useMart("ensembl", dataset="hsapiens_gene_ensembl")
+gene_metadata <- getBM(
+    attributes = c( "chromosome_name", "start_position", "end_position", "strand","ensembl_gene_id", "external_gene_name"),
+    filters = "ensembl_gene_id",
+    values = rownames(gene_counts),
+    mart = ensembl
+)
+
+
+# =============== Fix gene format ======================
+
+colnames(gene_metadata)[colnames(gene_metadata)=='ensembl_gene_id'] <- 'geneID'
+
+# Current column order:
+# geneID, chromosome_name, start_position, end_position, strand, gene_biotype
+
+gene_metadata <- gene_metadata[, c("chromosome_name", "start_position", "end_position", "strand","geneID", "external_gene_name" )]
+
+```
+
+# Participant info:
+```{r}
+
+
+teffect_participant_metadata <- participant_metadata[c("Status", "RIN")]
+
+# Subset rows based on rownames present in participant_only_colnames
+teffect_participant_metadata <- teffect_participant_metadata[rownames(teffect_participant_metadata) %in% participant_only_colnames, ]
+
+```
+
+
+
+```{r}
+
+str(gene_metadata)
+colnames(gene_metadata)
+
+gene_metadata <- gene_metadata[c("chromosome_name", "start_position", "end_position","strand" ,"geneID", "external_gene_name")]
+colnames(gene_metadata) <- c("chr", "start", "end", "strand", "geneID", "geneName")
+
+colnames(gene_metadata)
+
+# str(gene_counts_sub)
+colnames(gene_counts_sub)
+
+# str(te_counts_sub)
+colnames(te_counts_sub)
+
+
+# 
+# 
+# TEffectR::apply_lm(
+#   gene.annotation = gene_metadata,
+#   gene.counts = gene_counts_sub,
+#   repeat.counts = te_counts_sub, 
+#   prefix = 'test_1')
+# 
+
+```
+
+# Inspect resulting significant models from TEffectR
+```{r}
+
+models_df <- read.table(file = 'test_1 -lm-results.tsv', sep = '\t', header = TRUE)
+
+cpm_df <- read.table(file = 'test_1 -cpm-values.tsv', sep = '\t', header = TRUE)
+```
+
+
+
+it seems like the TEffectsR is not picking up on the fact that there are separate conditions? Because it keep throwing the same error saying that there isnt a category variable.
+
+# ==== ALTERNATIVE FUNCTION 
+```{r}
+
+source(file = "glm count modelling rewrite.R")
+source(file = "numeric function.R")
+
+pairs_df <- pairs %>% convert_to_numeric
+colnames(pairs_df)[colnames(pairs_df)=='Gene_id'] <- "gene_id"
+colnames(pairs_df)[colnames(pairs_df)=='TE_name'] <- "te_id"
+
+raw_gene_counts <- gene_counts
+
+raw_te_counts <- te_counts_sub[,4:ncol(te_counts_sub)] %>% convert_to_numeric
+# inputting only significant TEs
+
+metadata <- participant_metadata %>% convert_to_numeric
+
+# Assess distribution
+# distribution_info <- assess_count_distribution(raw_gene_counts)
+
+# Run GLM analysis
+results_glm_associations <- te_gene_linear_modeling(
+  te_gene_pairs = pairs_df,
+  gene_expression_matrix = raw_gene_counts,
+  te_expression_matrix = raw_te_counts,
+  participant_data = metadata,
+  data_type = "counts",
+  covariates = c('RIN'),
+  p_value_threshold = 0.05,
+  adjust_method = "BH",
+  count_distribution = "negative_binomial",
+  library_size_normalization = TRUE
+)
+
+```
+
+```{r}
+str(results_glm_associations)
+library(tidyverse)
+# results_glm_associations %>% view()
+```
+
+
+# Retrive pathway data based on ensembl gene id
+```{r}
+
+
+gene_pathways <- getBM(
+    attributes = c(
+        "ensembl_gene_id",
+        "external_gene_name",
+        "reactome" # Human-readable pathway name
+    ),
+    filters = "ensembl_gene_id",
+    values = rownames(gene_counts),
+    mart = ensembl
+)
+
+gene_go <- getBM(
+    attributes = c(
+        "ensembl_gene_id",
+        "external_gene_name",
+        "go_id",
+        "name_1006",     # GO term name
+        "namespace_1003" # BP, MF, CC
+    ),
+    filters = "ensembl_gene_id",
+    values = rownames(gene_counts),
+    mart = ensembl
+)
+
+# Filter for Biological Process only
+gene_go_bp <- subset(gene_go, namespace_1003 == "biological_process")
+
+
+```
+
+```{r}
+
+colnames(results_glm_associations)[colnames(results_glm_associations)=='gene_id'] <- "ensembl_gene_id"
+
+# left join on significant associations
+results_merged <- left_join(results_glm_associations, y = gene_go_bp, by = c("ensembl_gene_id"="ensembl_gene_id"))
+
+```
+
+
+# Upregulated pathways
+```{r}
+
+results_merged 
+
+
+pathway_types <- results_merged %>% filter(te_significant == TRUE, te_effect_direction == 'positive') %>% group_by(name_1006) %>% summarise(count = n()) %>% filter(!is.na(name_1006))
+
+top <- pathway_types %>%
+  arrange(desc(count)) %>%
+  slice_head(n = 20)
+
+# Make a horizontal bar plot and assign it to 'p'
+p <- ggplot(top, aes(x = reorder(name_1006, count), y = count)) +
+  geom_col(fill = "royalblue1") +
+  coord_flip() +
+  labs(
+    title = "Top positively upregulated pathways",
+    x = "Pathway",
+    y = "Number of Correlations"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+results_merged %>% filter(te_significant == TRUE, te_effect_direction == 'positive') %>% nrow()
+results_merged %>% filter(te_significant == TRUE, te_effect_direction == 'positive') %>% group_by(te_id) %>% summarise(count = n())
+
+# Save the plot
+ggsave(
+  filename = "../plots/2 Enrichment analysis/pathway correlations.png",
+  plot = p,
+  width = 8,
+  height = 4,
+  dpi = 300
+)
+```
+
+
+# Downregulated pathways
+```{r}
+
+pathway_types <- results_merged %>% filter(te_significant == TRUE, te_effect_direction == 'negative') %>% group_by(name_1006) %>% summarise(count = n()) %>% filter(!is.na(name_1006))
+
+top30 <- pathway_types %>%
+  arrange(desc(count)) %>%
+  slice_head(n = 30)
+
+# Make a horizontal bar plot
+ggplot(top30, aes(x = reorder(name_1006, count), y = count)) +
+  geom_col(fill = "indianred") +
+  coord_flip() +
+  labs(
+    title = "Top 30 Pathways by Correlation Count",
+    x = "Pathway",
+    y = "Number of Correlations"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+```
+
+
+
+
+
+
+
+
+
+
